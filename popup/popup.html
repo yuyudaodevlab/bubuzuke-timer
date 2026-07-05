@@ -63,6 +63,55 @@
         </span>
         <input type="checkbox" id="snooze-toggle" class="toggle" />
       </label>
+
+      <label class="setting-row">
+        <span>
+          <span class="setting-name">開発モード</span>
+          <span class="setting-desc">間隔の変更とテスト機能を開放します</span>
+        </span>
+        <input type="checkbox" id="dev-mode" class="toggle" />
+      </label>
+    </section>
+
+    <!-- 開発モード -->
+    <section class="card dev-card hidden" id="dev-card">
+      <div class="card-title"><h2>開発の間（開発モード）</h2></div>
+
+      <label class="setting-row">
+        <span>
+          <span class="setting-name">通知の間隔</span>
+          <span class="setting-desc">何分ごとに通知するか（1〜480分）</span>
+        </span>
+        <span class="interval-input">
+          <input type="number" id="notify-interval" min="1" max="480" step="1" />
+          <span class="unit">分</span>
+        </span>
+      </label>
+
+      <label class="setting-row">
+        <span>
+          <span class="setting-name">ポップアップの間隔</span>
+          <span class="setting-desc">何分ごとにポップアップを出すか（1〜480分）</span>
+        </span>
+        <span class="interval-input">
+          <input type="number" id="popup-interval" min="1" max="480" step="1" />
+          <span class="unit">分</span>
+        </span>
+      </label>
+
+      <label class="setting-row">
+        <span>
+          <span class="setting-name">テストモード</span>
+          <span class="setting-desc">30秒ごとに10分ぶん時間が進みます（20倍速）</span>
+        </span>
+        <input type="checkbox" id="test-mode" class="toggle" />
+      </label>
+
+      <div class="test-buttons">
+        <button id="test-notify-btn" class="btn-ghost btn-small">🔔 テスト通知</button>
+        <button id="test-popup-btn" class="btn-ghost btn-small">🖼️ テストポップアップ</button>
+      </div>
+      <p id="test-result" class="test-result hidden"></p>
     </section>
   </main>
 

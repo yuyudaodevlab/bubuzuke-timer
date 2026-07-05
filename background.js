@@ -8,12 +8,21 @@ import { pickPhrase, levelForNagCount } from "./shared/phrases.js";
 const TICK_MINUTES = 1;
 const SESSION_GAP_MINUTES = 5; // このぶん離れたら「連続使用」をリセット
 
+// テストモード: 30秒ごとの巡回で、1回あたり10分ぶん時間が進む（実時間の20倍速）
+const TEST_TICK_PERIOD_MIN = 0.5;
+const TEST_MINUTES_PER_TICK = 10;
+
+const INTERVAL_MIN = 1;    // 間隔設定の下限（分）
+const INTERVAL_MAX = 480;  // 間隔設定の上限（分）
+
 const DEFAULT_SETTINGS = {
   notifyEnabled: true,      // 30分ごとの通知
   popupEnabled: true,       // 60分ごとのポップアップ
   notifyIntervalMin: 30,
   popupIntervalMin: 60,
-  snoozeDate: ""            // "YYYY-MM-DD" が今日なら通知しない
+  snoozeDate: "",           // "YYYY-MM-DD" が今日なら通知しない
+  devMode: false,           // 開発モード（間隔変更・テストモードを開放）
+  testMode: false           // テストモード（時間が20倍速で進む）
 };
 
 function todayKey(d = new Date()) {
@@ -44,14 +53,21 @@ function isSnoozedToday(settings) {
 
 // ---- 初期化 ----
 
+// テストモードの有無に合わせて巡回アラームを張り直す
+async function scheduleTick() {
+  const settings = await getSettings();
+  const period = settings.testMode ? TEST_TICK_PERIOD_MIN : TICK_MINUTES;
+  await chrome.alarms.create("tick", { periodInMinutes: period });
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
-  chrome.alarms.create("tick", { periodInMinutes: TICK_MINUTES });
   const settings = await getSettings();
   await chrome.storage.local.set({ settings });
+  await scheduleTick();
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create("tick", { periodInMinutes: TICK_MINUTES });
+  scheduleTick();
 });
 
 // ---- 毎分の見回り ----
@@ -65,9 +81,17 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   }
 });
 
+// prev → now の間に interval の倍数をまたいだか（テストモードで1回に数分進んでも取りこぼさない）
+function crossedInterval(prevMin, nowMin, intervalMin) {
+  if (!intervalMin || intervalMin <= 0) return false;
+  return Math.floor(nowMin / intervalMin) > Math.floor(prevMin / intervalMin);
+}
+
 async function patrol() {
   const now = Date.now();
   const session = await getSession();
+  const settings = await getSettings();
+  const tickMinutes = settings.testMode ? TEST_MINUTES_PER_TICK : TICK_MINUTES;
 
   // PCから離れている間はカウントしない
   const idleState = await chrome.idle.queryState(60);
@@ -89,18 +113,18 @@ async function patrol() {
   const key = todayKey();
   if (!stats[key]) stats[key] = { sites: {} };
   if (!stats[key].sites[site.id]) stats[key].sites[site.id] = { minutes: 0, nags: 0 };
-  stats[key].sites[site.id].minutes += TICK_MINUTES;
+  stats[key].sites[site.id].minutes += tickMinutes;
 
   // 連続使用時間を更新
-  session.minutes += TICK_MINUTES;
+  const prevMinutes = session.minutes;
+  session.minutes += tickMinutes;
   session.lastActive = now;
 
   pruneOldStats(stats);
 
-  const settings = await getSettings();
   const snoozed = isSnoozedToday(settings);
 
-  // 催促判定: 60分の倍数ならポップアップ、30分の倍数なら通知
+  // 催促判定: ポップアップ間隔をまたいだらポップアップ、通知間隔をまたいだら通知
   let nagged = false;
   if (!snoozed && session.minutes > 0) {
     const totalNagsToday = countNagsToday(stats[key]);
@@ -108,13 +132,13 @@ async function patrol() {
     const phrase = pickPhrase(site.id, level);
     const totalToday = countMinutesToday(stats[key]);
 
-    if (settings.popupEnabled && session.minutes % settings.popupIntervalMin === 0) {
+    if (settings.popupEnabled && crossedInterval(prevMinutes, session.minutes, settings.popupIntervalMin)) {
       nagged = await showOverlay(tab, site, phrase, session.minutes, totalToday, level);
       if (!nagged && settings.notifyEnabled) {
         // タブにコンテンツスクリプトが届かない場合は通知にフォールバック
         nagged = await showNotification(site, phrase, session.minutes);
       }
-    } else if (settings.notifyEnabled && session.minutes % settings.notifyIntervalMin === 0) {
+    } else if (settings.notifyEnabled && crossedInterval(prevMinutes, session.minutes, settings.notifyIntervalMin)) {
       nagged = await showNotification(site, phrase, session.minutes);
     }
 
@@ -202,6 +226,51 @@ async function updateBadge(dayStats) {
   await chrome.action.setBadgeText({ text: total > 0 ? String(total) : "" });
 }
 
+// ---- 開発モード: 設定値の検証とテスト実行 ----
+
+function clampInterval(value, fallback) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(INTERVAL_MAX, Math.max(INTERVAL_MIN, n));
+}
+
+function sanitizeSettings(settings) {
+  return {
+    ...settings,
+    notifyIntervalMin: clampInterval(settings.notifyIntervalMin, DEFAULT_SETTINGS.notifyIntervalMin),
+    popupIntervalMin: clampInterval(settings.popupIntervalMin, DEFAULT_SETTINGS.popupIntervalMin),
+    devMode: !!settings.devMode,
+    testMode: !!settings.testMode
+  };
+}
+
+// テスト通知: 開いているサイトに関係なく、ランダムなセリフで即座に通知を出す
+async function runTestNotify() {
+  const activeInfo = await getActiveMonitoredTab();
+  const site = activeInfo ? activeInfo.site : SITE_DEFS[Math.floor(Math.random() * SITE_DEFS.length)];
+  const level = 1 + Math.floor(Math.random() * 3);
+  const shown = await showNotification(site, pickPhrase(site.id, level), 30);
+  return shown
+    ? { ok: true, message: "テスト通知を出しましたえ。" }
+    : { ok: false, message: "通知が出せまへんどした。OSの通知設定をご確認おくれやす。" };
+}
+
+// テストポップアップ: アクティブタブが監視対象サイトのときだけ表示できる
+async function runTestPopup() {
+  const activeInfo = await getActiveMonitoredTab();
+  if (!activeInfo) {
+    return { ok: false, message: "監視対象のサイトを開いたタブで試しとぉくれやす。" };
+  }
+  const { tab, site } = activeInfo;
+  const level = 1 + Math.floor(Math.random() * 3);
+  const stats = await getStats();
+  const totalToday = countMinutesToday(stats[todayKey()]);
+  const shown = await showOverlay(tab, site, pickPhrase(site.id, level), 60, totalToday, level);
+  return shown
+    ? { ok: true, message: "ポップアップを出しましたえ。タブをご覧おくれやす。" }
+    : { ok: false, message: "出せまへんどした。ページを再読み込みしてから試しとぉくれやす。" };
+}
+
 // ---- ポップアップ / コンテンツスクリプトからのメッセージ ----
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -218,9 +287,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         await chrome.storage.local.set({ settings });
         sendResponse({ ok: true });
       } else if (msg.type === "setSettings") {
-        const settings = { ...(await getSettings()), ...msg.settings };
+        const settings = sanitizeSettings({ ...(await getSettings()), ...msg.settings });
         await chrome.storage.local.set({ settings });
+        await scheduleTick(); // テストモードの切り替えに合わせて巡回間隔を張り直す
         sendResponse({ ok: true, settings });
+      } else if (msg.type === "testNotify") {
+        sendResponse(await runTestNotify());
+      } else if (msg.type === "testPopup") {
+        sendResponse(await runTestPopup());
       } else if (msg.type === "getState") {
         const [settings, stats, session] = await Promise.all([getSettings(), getStats(), getSession()]);
         sendResponse({

@@ -119,6 +119,17 @@ function renderSettings() {
   $("notify-enabled").checked = state.settings.notifyEnabled;
   $("popup-enabled").checked = state.settings.popupEnabled;
   $("snooze-toggle").checked = state.snoozedToday;
+  $("dev-mode").checked = !!state.settings.devMode;
+  renderDevCard();
+}
+
+function renderDevCard() {
+  const dev = !!state.settings.devMode;
+  $("dev-card").classList.toggle("hidden", !dev);
+  if (!dev) return;
+  $("notify-interval").value = state.settings.notifyIntervalMin;
+  $("popup-interval").value = state.settings.popupIntervalMin;
+  $("test-mode").checked = !!state.settings.testMode;
 }
 
 function renderFooter() {
@@ -160,6 +171,56 @@ function bindEvents() {
     state = await chrome.runtime.sendMessage({ type: "getState" });
     renderSnooze();
   });
+
+  // ---- 開発モード ----
+
+  $("dev-mode").addEventListener("change", async (e) => {
+    await applySettings({ devMode: e.target.checked });
+    renderDevCard();
+  });
+
+  $("test-mode").addEventListener("change", async (e) => {
+    await applySettings({ testMode: e.target.checked });
+    showTestResult(
+      e.target.checked
+        ? "テストモード開始どす。30秒ごとに10分ぶん進みますえ。"
+        : "テストモードを終いました。ふつうの時の流れに戻りますえ。",
+      true
+    );
+  });
+
+  $("notify-interval").addEventListener("change", async (e) => {
+    await applySettings({ notifyIntervalMin: e.target.value });
+    e.target.value = state.settings.notifyIntervalMin; // 検証後の値を反映
+  });
+
+  $("popup-interval").addEventListener("change", async (e) => {
+    await applySettings({ popupIntervalMin: e.target.value });
+    e.target.value = state.settings.popupIntervalMin;
+  });
+
+  $("test-notify-btn").addEventListener("click", async () => {
+    const res = await chrome.runtime.sendMessage({ type: "testNotify" });
+    showTestResult(res?.message ?? "うまくいきまへんどした。", res?.ok);
+  });
+
+  $("test-popup-btn").addEventListener("click", async () => {
+    const res = await chrome.runtime.sendMessage({ type: "testPopup" });
+    showTestResult(res?.message ?? "うまくいきまへんどした。", res?.ok);
+  });
+}
+
+// 設定を保存し、バックグラウンドで検証された値でローカル状態を更新する
+async function applySettings(patch) {
+  const res = await chrome.runtime.sendMessage({ type: "setSettings", settings: patch });
+  if (res?.settings) state.settings = res.settings;
+}
+
+function showTestResult(message, ok) {
+  const el = $("test-result");
+  el.textContent = message;
+  el.classList.remove("hidden");
+  el.classList.toggle("error", !ok);
 }
 
 // ---- ユーティリティ ----
